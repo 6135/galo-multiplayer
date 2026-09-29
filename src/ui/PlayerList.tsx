@@ -23,6 +23,7 @@ export function PlayerList({ players, order, turnPlayerId, hostPlayerId, meId }:
           </span>
           <span className="player__name">{player.name}</span>
           {player.id === hostPlayerId && <span className="tag">anfitrião</span>}
+          {player.bot && <span className="tag tag--bot">bot</span>}
           {player.id === turnPlayerId && <span className="tag tag--turn">vez</span>}
           <span className="player__score">{player.score}</span>
         </li>

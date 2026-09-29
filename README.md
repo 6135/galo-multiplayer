@@ -15,6 +15,22 @@ the room key. No backend, no database.
 - Turns follow the order. Each round the next seat opens. A win scores 1 point. A full grid is a draw.
 - A player on turn who drops gets 15 s to come back, then the turn passes.
 
+## Bots (single player)
+
+- The host can add bots in the lobby, with or without other people in the room. No bot exists until the host
+  adds one. A host alone plus one bot is a single player game.
+- A bot takes a seat, a symbol and a score like a person, and makes the grid grow the same way.
+- Bots run on the host device, in a Web Worker. Nothing new travels on the wire: a bot move goes through the
+  same host reducer as a human move.
+- The AI (`src/game/ai/mcts.ts`) is a port of the Monte Carlo Tree Search from
+  [IA-Mini-Project-Tict-Tac-Toe](https://github.com/6135/IA-Mini-Project-Tict-Tac-Toe): UCB1 with c = 0.9,
+  expansion kept to the winning children when one exists, every child simulated, a heavy playout (win, else
+  block, else random), 1 for a win and 0.5 for a draw, a move that lets the next player win at once is pruned,
+  and the final pick is the best win ratio. It is extended to an n×n grid, k in a row and N players (each node
+  scores for the player that moved into it). On a grid larger than 4×4 it only looks at cells next to a mark,
+  and a playout stops at a fixed depth, so a 13×13 grid stays fast.
+- Levels: fácil 25 iterations, normal 250 (the original default), difícil 3000, each with a time cap.
+
 ## Run it
 
 ```bash

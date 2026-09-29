@@ -9,7 +9,10 @@ import { HEARTBEAT_MS } from '../../net/directory'
 import { roomReducer, createRoomState, type RoomEvent } from '../../game/roomReducer'
 import { applyMove, createRound, skipTurn } from '../../game/roundReducer'
 import { gridSize, shuffle, starterForRound } from '../../game/order'
+import { toRequest } from '../../game/ai/bot'
+import { think } from '../../game/ai/think'
 import type {
+  BotLevel,
   JoinRequest,
   MoveRequest,
   Presence,
@@ -20,6 +23,10 @@ import type {
 
 /** The host waits this long for the player on turn to come back, then skips the turn. */
 export const TURN_GRACE_MS = 15_000
+/** A bot waits at least this long, so a person can follow its move. */
+export const BOT_MIN_DELAY_MS = 450
+
+const BOT_NAMES = ['Ana Bot', 'Rui Bot', 'Eva Bot', 'Tó Bot', 'Zé Bot', 'Lia Bot', 'Gil Bot', 'Bia Bot', 'Duda Bot', 'Nuno Bot', 'Rita Bot']
 
 export type HostDeps = {
   link: RoomLink
@@ -46,6 +53,9 @@ export class HostController {
   private readonly clients = new Map<string, string>()
   private graceTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeat: ReturnType<typeof setInterval> | null = null
+  /** The board position a bot is thinking about. Stops a double move. */
+  private botTurn: string | null = null
+  private disposed = false
 
   constructor(private readonly deps: HostDeps) {
     this.state = createRoomState({
@@ -107,6 +117,37 @@ export class HostController {
     }
     const { v: _v, seq: _seq, ts: _ts, src: _src, ...body } = round
     await this.deps.link.publish(this.deps.topics.round, body, { retain: true })
+    this.driveBot()
+  }
+
+  /** When a bot holds the turn, the host device plays for it. */
+  private driveBot(): void {
+    const round = this.round
+    if (!round || round.outcome !== 'running' || this.state.status !== 'playing') return
+    const bot = this.state.players.find((player) => player.id === round.turnPlayerId && player.bot)
+    if (!bot?.bot) return
+    const key = `${round.roundId}:${round.moves.length}`
+    if (this.botTurn === key) return
+    this.botTurn = key
+    const request = toRequest(round, this.state.order, this.state.players, bot.id, bot.bot)
+    const delay = new Promise((resolve) => setTimeout(resolve, BOT_MIN_DELAY_MS))
+    void Promise.all([think(request), delay]).then(async ([cell]) => {
+      if (this.disposed || this.botTurn !== key) return
+      this.botTurn = null
+      await this.play(round.roundId, bot.id, cell, round.moves.length)
+    })
+  }
+
+  /** Adds a bot in the lobby. It takes a seat like any player. */
+  async addBot(level: BotLevel): Promise<void> {
+    const used = new Set(this.state.players.map((player) => player.name))
+    const name = BOT_NAMES.find((candidate) => !used.has(candidate)) ?? `Bot ${this.state.players.length}`
+    const id = `bot-${crypto.randomUUID().slice(0, 8)}`
+    await this.dispatch({ type: 'add_bot', playerId: id, name, level })
+  }
+
+  async removeBot(playerId: string): Promise<void> {
+    await this.dispatch({ type: 'remove_bot', playerId })
   }
 
   /** Reduces one event and republishes when the state changed. */
@@ -278,6 +319,7 @@ export class HostController {
   }
 
   dispose(): void {
+    this.disposed = true
     this.cancelGrace()
     this.stopHeartbeat()
   }

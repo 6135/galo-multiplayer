@@ -110,6 +110,41 @@ try {
   check('a restart clears the scores', (await totalScore(host)) === 0)
   check('a restart clears the board', (await third.locator('.grid').count()) === 0)
 
+  // Bots and people in one room: the host adds a bot, the grid grows to 5x5.
+  check('no bot exists until one is added', (await host.locator('.tag--bot').count()) === 0)
+  await host.getByRole('button', { name: 'Adicionar bot' }).click()
+  await guest.locator('.tag--bot').waitFor({ timeout: 10000 })
+  check('the other players see the bot', (await third.locator('.tag--bot').count()) === 1)
+  check('four players get a 5x5 grid', await host.getByText('a grelha é 5×5').isVisible())
+  await host.getByRole('button', { name: 'Começar o jogo' }).click()
+  await guest.locator('.grid').waitFor({ timeout: 15000 })
+  check('the mixed grid has 25 cells', (await guest.locator('.cell').count()) === 25)
+  const botSymbol = await botSymbolOn(host)
+  await playUntilEnd(pages)
+  check('the bot played in the mixed room', (await marksOf(guest, botSymbol)) > 0)
+
+  // Single player: one person alone in a room, then a bot to play against.
+  const solo = await newPage(browser, 'dora')
+  await enter(solo, 'dora', 'Criar sala', 'sala a solo')
+  check(
+    'a person alone cannot start',
+    await solo.getByRole('button', { name: 'Começar o jogo' }).isDisabled(),
+  )
+  await solo.getByLabel('Nível do bot').selectOption('easy')
+  await solo.getByRole('button', { name: 'Adicionar bot' }).click()
+  await solo.getByRole('button', { name: 'Começar o jogo' }).click()
+  await solo.locator('.grid').waitFor({ timeout: 15000 })
+  check('one person and one bot play on 3x3', (await solo.locator('.cell').count()) === 9)
+  const soloBot = await botSymbolOn(solo)
+  await playUntilEnd([{ page: solo, name: 'dora' }])
+  check('the bot played in the single player room', (await marksOf(solo, soloBot)) > 0)
+  check(
+    'the bot thinks in a web worker',
+    solo.workers().some((worker) => worker.url().includes('ai.worker')),
+  )
+  check('the single player round has a result', await solo.getByText(/ganhou\.|Empate\./).isVisible())
+  await solo.getByRole('button', { name: 'Fechar a sala' }).click()
+
   // The Last Will closes the room when the host connection dies.
   await host.context().close()
   await third.getByText('O anfitrião saiu. A sala fechou.').waitFor({ timeout: 20000 })
@@ -165,8 +200,8 @@ async function newPage(browser, label) {
   return page
 }
 
-async function enter(page, name, button) {
-  await page.getByLabel('Nome da sala').fill(ROOM)
+async function enter(page, name, button, room = ROOM) {
+  await page.getByLabel('Nome da sala').fill(room)
   await page.getByLabel('Chave da sala').fill(KEY)
   await page.getByLabel('O seu nome').fill(name)
   await page.getByRole('button', { name: 'Broker e credenciais' }).click()
@@ -216,6 +251,43 @@ async function playCells(pages, cells) {
     }
   }
   return seats
+}
+
+/** The symbol of the first bot, read from the roster. */
+async function botSymbolOn(page) {
+  const row = page.locator('.player', { has: page.locator('.tag--bot') }).first()
+  return (await row.locator('.player__symbol').innerText()).trim()
+}
+
+async function marksOf(page, symbol) {
+  const texts = await page.locator('.cell').allInnerTexts()
+  return texts.filter((text) => text.trim() === symbol).length
+}
+
+/** People play the first free cell on their turn. The bots play by themselves. */
+async function playUntilEnd(pages) {
+  const deadline = Date.now() + 90000
+  while (Date.now() < deadline) {
+    const first = pages[0].page
+    if (await first.getByText(/ganhou\.|Empate\./).isVisible()) return
+    let moved = false
+    for (const entry of pages) {
+      if (!(await entry.page.getByText('É a sua vez.').isVisible())) continue
+      const free = entry.page.locator('.cell:not([disabled])').first()
+      if ((await free.count()) === 0) continue
+      const before = await entry.page.locator('.cell:not(:empty)').count()
+      await free.click()
+      await entry.page.waitForFunction(
+        (count) => document.querySelectorAll('.cell:not(:empty)').length > count,
+        before,
+        { timeout: 10000 },
+      )
+      moved = true
+      break
+    }
+    if (!moved) await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error('the round did not end')
 }
 
 function tones(page) {

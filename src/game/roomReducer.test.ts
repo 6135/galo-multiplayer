@@ -96,3 +96,36 @@ describe('the room', () => {
     expect(state.order).toEqual([])
   })
 })
+
+describe('the bots', () => {
+  const alone = () => createRoomState({ hostId: 'h', hostPlayerId: 'a', hostName: 'ana' })
+
+  it('lets a host alone start a game with a bot', () => {
+    let state = roomReducer(alone(), { type: 'add_bot', playerId: 'bot-1', name: 'Rui Bot', level: 'easy' })
+    expect(state.players[1]).toMatchObject({ bot: 'easy', connected: true })
+    state = roomReducer(state, { type: 'start_game', order: ['bot-1', 'a'] })
+    expect(state.status).toBe('playing')
+  })
+
+  it('mixes bots and people in one room', () => {
+    let state = lobby()
+    state = roomReducer(state, { type: 'add_bot', playerId: 'bot-1', name: 'Rui Bot', level: 'hard' })
+    expect(state.players.filter((p) => p.bot)).toHaveLength(1)
+    expect(state.players).toHaveLength(4)
+  })
+
+  it('ignores a presence for a bot and removes only a bot', () => {
+    let state = roomReducer(alone(), { type: 'add_bot', playerId: 'bot-1', name: 'x', level: 'easy' })
+    expect(roomReducer(state, { type: 'presence', playerId: 'bot-1', online: false })).toBe(state)
+    expect(roomReducer(state, { type: 'remove_bot', playerId: 'a' })).toBe(state)
+    state = roomReducer(state, { type: 'remove_bot', playerId: 'bot-1' })
+    expect(state.players).toHaveLength(1)
+  })
+
+  it('adds no bot after the start and keeps the bots on a restart', () => {
+    let state = roomReducer(alone(), { type: 'add_bot', playerId: 'bot-1', name: 'x', level: 'easy' })
+    state = roomReducer(state, { type: 'start_game', order: ['a', 'bot-1'] })
+    expect(roomReducer(state, { type: 'add_bot', playerId: 'bot-2', name: 'y', level: 'easy' })).toBe(state)
+    expect(roomReducer(state, { type: 'restart' }).players).toHaveLength(2)
+  })
+})

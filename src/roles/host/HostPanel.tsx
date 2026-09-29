@@ -5,7 +5,8 @@ import { ranking } from '../../game/roomReducer'
 import { gridSize, MAX_PLAYERS, MIN_PLAYERS } from '../../game/order'
 import { effectiveWinLength, MAX_WIN_LENGTH, MIN_WIN_LENGTH } from '../../game/roundReducer'
 import { hostApi } from '../roomSession'
-import type { RoomState } from '../../game/types'
+import { LEVELS } from '../../game/ai/bot'
+import type { BotLevel, RoomState } from '../../game/types'
 
 function exportRanking(roster: RoomState): void {
   const payload = {
@@ -31,6 +32,9 @@ function exportRanking(roster: RoomState): void {
 export function HostPanel({ roster, blocked }: { roster: RoomState; blocked: boolean }) {
   const connected = roster.players.filter((player) => player.connected).length
   const [armed, setArmed] = useState(false)
+  const [level, setLevel] = useState<BotLevel>('normal')
+  const bots = roster.players.filter((player) => player.bot)
+  const full = roster.players.length >= MAX_PLAYERS
   const live = roster.status === 'playing'
   const size = gridSize(Math.min(connected, MAX_PLAYERS))
   const winLength = effectiveWinLength(roster.config.winLength, size)
@@ -57,6 +61,53 @@ export function HostPanel({ roster, blocked }: { roster: RoomState; blocked: boo
 
       {roster.status === 'lobby' && (
         <>
+          <div className="bots">
+            <h4>Bots</h4>
+            <div className="row">
+              <select
+                aria-label="Nível do bot"
+                value={level}
+                onChange={(event) => setLevel(event.target.value as BotLevel)}
+              >
+                {(Object.keys(LEVELS) as BotLevel[]).map((key) => (
+                  <option key={key} value={key}>
+                    {LEVELS[key].label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={blocked || full}
+                onClick={() => void hostApi.addBot(level)}
+              >
+                Adicionar bot
+              </button>
+            </div>
+            {bots.length > 0 && (
+              <ul className="bots__list">
+                {bots.map((bot) => (
+                  <li key={bot.id}>
+                    <span>
+                      {bot.name} · {LEVELS[bot.bot!].label}
+                    </span>
+                    <button
+                      type="button"
+                      className="chip"
+                      aria-label={`Remover ${bot.name}`}
+                      disabled={blocked}
+                      onClick={() => void hostApi.removeBot(bot.id)}
+                    >
+                      Remover
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="hint">
+              Sozinho? Adicione bots para jogar. Os bots jogam neste dispositivo e só existem se os
+              adicionar.
+            </p>
+          </div>
           <label className="row">
             Em linha para ganhar
             <input
@@ -87,7 +138,7 @@ export function HostPanel({ roster, blocked }: { roster: RoomState; blocked: boo
           >
             Começar o jogo
           </button>
-          {connected < MIN_PLAYERS && <p className="hint">São precisos dois jogadores ligados.</p>}
+          {connected < MIN_PLAYERS && <p className="hint">São precisos dois jogadores ligados. Um bot conta como jogador.</p>}
           {connected > MAX_PLAYERS && (
             <p className="hint">Só os primeiros {MAX_PLAYERS} jogadores sorteados jogam.</p>
           )}
