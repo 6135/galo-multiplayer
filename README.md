@@ -15,6 +15,29 @@ the room key. No backend, no database.
 - Turns follow the order. Each round the next seat opens. A win scores 1 point. A full grid is a draw.
 - A player on turn who drops gets 15 s to come back, then the turn passes.
 
+## Bots (single player)
+
+- The host can add bots in the lobby, with or without other people in the room. No bot exists until the host
+  adds one. A host alone plus one bot is a single player game.
+- A bot takes a seat, a symbol and a score like a person, and makes the grid grow the same way.
+- Bots run on the host device, in a Web Worker. Nothing new travels on the wire: a bot move goes through the
+  same host reducer as a human move.
+- The AI (`src/game/ai/mcts.ts`) is a port of the Monte Carlo Tree Search from
+  [IA-Mini-Project-Tict-Tac-Toe](https://github.com/6135/IA-Mini-Project-Tict-Tac-Toe): UCB1 with c = 0.9,
+  expansion kept to the winning children when one exists, every child simulated, a heavy playout (win, else
+  block, else random), 1 for a win and 0.5 for a draw, a move that lets the next player win at once is pruned,
+  and the final pick is the best win ratio. It is extended to an n×n grid, k in a row and N players (each node
+  scores for the player that moved into it).
+- For large grids (`src/game/ai/tactics.ts`, `src/game/ai/heuristic.ts`):
+  - A tactics layer runs before the search: win now, block a win (nearest player in turn order first), make a
+    fork, block a fork. A fork needs one winning cell per other player, because each of them can block one.
+    Against two fork cells the bot first looks for a forcing threat whose reply gives no fork.
+  - A window heuristic (every run of k cells, live for one seat only) ranks the moves. The search opens the
+    best moves first and more as visits grow (progressive widening), with a fading bonus for good moves
+    (progressive bias). Playouts pick cells by the heuristic, and a playout cut at the depth cap is scored by it.
+- Levels: fácil 25 iterations and no fork search, normal 250 (the original default), difícil 3000, each with a
+  time cap.
+
 ## Run it
 
 ```bash

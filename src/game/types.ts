@@ -9,11 +9,16 @@ export type RoomConfig = {
   onePassLimit: boolean
 }
 
+/** A bot plays on the host device. The level sets how long it thinks. */
+export type BotLevel = 'easy' | 'normal' | 'hard'
+
 export type Player = {
   id: string
   name: string
   score: number
   connected: boolean
+  /** Set for a bot. A bot is always connected and never sends a message. */
+  bot?: BotLevel
   /** Set when the game starts, from the frozen order. Empty in the lobby. */
   symbol: string
 }

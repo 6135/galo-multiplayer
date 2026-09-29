@@ -9,6 +9,7 @@ import { deriveRoomCryptoKey } from '../net/crypto'
 import { HostController } from './host/hostController'
 import { useGameStore, stablePlayerId, type Identity } from '../store/gameStore'
 import type {
+  BotLevel,
   JoinRequest,
   MoveRequest,
   Presence,
@@ -331,6 +332,8 @@ export async function playCell(cell: number): Promise<void> {
 export const hostApi = {
   available: () => host !== null,
   setConfig: (patch: Partial<RoomConfig>) => host?.setConfig(patch),
+  addBot: (level: BotLevel) => host?.addBot(level),
+  removeBot: (playerId: string) => host?.removeBot(playerId),
   startGame: () => host?.startGame(),
   nextRound: () => host?.nextRound(),
   endGame: () => host?.endGame(),

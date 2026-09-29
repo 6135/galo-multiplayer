@@ -2,7 +2,7 @@
 
 import { MAX_PLAYERS, MIN_PLAYERS, SYMBOLS } from './order'
 import { MAX_WIN_LENGTH, MIN_WIN_LENGTH } from './roundReducer'
-import type { LastRound, Player, RoomConfig, RoomState, RoundRecord } from './types'
+import type { BotLevel, LastRound, Player, RoomConfig, RoomState, RoundRecord } from './types'
 
 /** The roster travels on every change, so the history cannot grow forever. */
 export const HISTORY_LIMIT = 50
@@ -10,6 +10,8 @@ export const HISTORY_LIMIT = 50
 export type RoomEvent =
   | { type: 'join'; playerId: string; name: string }
   | { type: 'presence'; playerId: string; online: boolean }
+  | { type: 'add_bot'; playerId: string; name: string; level: BotLevel }
+  | { type: 'remove_bot'; playerId: string }
   | { type: 'config'; patch: Partial<RoomConfig> }
   | { type: 'start_game'; order: string[] }
   | { type: 'start_round' }
@@ -95,9 +97,35 @@ export function roomReducer(state: RoomState, event: RoomEvent): RoomState {
       ])
     }
 
+    case 'add_bot': {
+      if (state.status !== 'lobby') return state
+      if (state.players.length >= MAX_PLAYERS) return state
+      if (state.players.some((player) => player.id === event.playerId)) return state
+      return withPlayers(state, [
+        ...state.players,
+        {
+          id: event.playerId,
+          name: cleanName(event.name) || 'bot',
+          score: 0,
+          connected: true,
+          symbol: '',
+          bot: event.level,
+        },
+      ])
+    }
+
+    case 'remove_bot': {
+      if (state.status !== 'lobby') return state
+      const players = state.players.filter(
+        (player) => !(player.id === event.playerId && player.bot),
+      )
+      return players.length === state.players.length ? state : withPlayers(state, players)
+    }
+
     case 'presence': {
       const player = state.players.find((row) => row.id === event.playerId)
-      if (!player || player.connected === event.online) return state
+      // A bot has no device, so no presence can change it.
+      if (!player || player.bot || player.connected === event.online) return state
       return withPlayers(
         state,
         state.players.map((row) =>
