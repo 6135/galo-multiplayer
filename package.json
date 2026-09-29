@@ -1,0 +1,37 @@
+{
+  "name": "galo-multiplayer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --force",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "broker": "node scripts/dev-broker.mjs",
+    "e2e": "node scripts/e2e-smoke.mjs",
+    "sniff": "vite-node scripts/sniff.ts"
+  },
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "mqtt": "^5.10.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "aedes": "^1.1.2",
+    "playwright": "^1.62.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9",
+    "vite-node": "^2.1.9",
+    "vitest": "^2.1.3",
+    "ws": "^8.21.3"
+  }
+}
