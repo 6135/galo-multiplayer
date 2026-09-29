@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chooseMove, EMPTY, winsAt, type AiRequest } from './mcts'
+import { chooseMove, EMPTY, search, winsAt, type AiRequest, type SearchMemory } from './mcts'
 
 /** Seeded random, so a failure repeats. */
 function seeded(seed: number): () => number {
@@ -93,5 +93,60 @@ describe('the AI', () => {
     )
     expect(Date.now() - start).toBeLessThan(1500)
     expect(cells[cell]).toBe(EMPTY)
+  })
+})
+
+describe('the search on a big grid', () => {
+  const empty81 = () => Array.from({ length: 81 }, () => EMPTY)
+  const base = (cells: number[], toMove: number): AiRequest => ({
+    size: 9,
+    winLength: 5,
+    cells,
+    players: 2,
+    toMove,
+    iterations: 600,
+    timeMs: 5000,
+    memoryKey: 'bot',
+  })
+
+  it('looks more than two plies ahead', () => {
+    const cells = empty81()
+    cells[40] = 0
+    cells[41] = 1
+    const result = search(base(cells, 0), seeded(7))
+    expect(result.forced).toBe(false)
+    expect(result.depth).toBeGreaterThanOrEqual(4)
+  })
+
+  it('keeps the tree for the next turn of the same bot', () => {
+    const memory: SearchMemory = new Map()
+    const cells = empty81()
+    cells[40] = 0
+    cells[41] = 1
+    const first = search(base(cells, 0), seeded(8), memory)
+    expect(first.reused).toBe(0)
+
+    // The other player answers with the reply the tree knows best.
+    const mine = memory.get('bot')!.root.children!.find((node) => node.move === first.cell)!
+    const reply = mine.children!.reduce((a, b) => (b.visits > a.visits ? b : a))
+    const known = reply.visits
+    const next = cells.slice()
+    next[first.cell] = 0
+    next[reply.move] = 1
+    const second = search(base(next, 0), seeded(9), memory)
+    expect(second.reused).toBe(known)
+    expect(second.reused).toBeGreaterThan(0)
+  })
+
+  it('starts a new tree when the position does not follow', () => {
+    const memory: SearchMemory = new Map()
+    const cells = empty81()
+    cells[40] = 0
+    cells[41] = 1
+    search(base(cells, 0), seeded(10), memory)
+    const other = empty81()
+    other[10] = 0
+    other[11] = 1
+    expect(search(base(other, 0), seeded(11), memory).reused).toBe(0)
   })
 })

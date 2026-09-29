@@ -35,6 +35,10 @@ the room key. No backend, no database.
   - A window heuristic (every run of k cells, live for one seat only) ranks the moves. The search opens the
     best moves first and more as visits grow (progressive widening), with a fading bonus for good moves
     (progressive bias). Playouts pick cells by the heuristic, and a playout cut at the depth cap is scored by it.
+  - On a grid larger than 4×4 each iteration simulates one new node and expands a node only after its first
+    visit (standard MCTS), so the search goes deeper. 3×3 and 4×4 keep the original "simulate every child".
+  - The worker keeps the tree of each bot for the round. On the next turn the search starts from the node of
+    the new position, with its visits, when the moves in between are on the tree.
 - Levels: fácil 25 iterations and no fork search, normal 250 (the original default), difícil 3000, each with a
   time cap.
 

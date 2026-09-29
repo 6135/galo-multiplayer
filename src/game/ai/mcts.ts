@@ -15,6 +15,11 @@
  *
  * Added for a big grid:
  *
+ * - On a grid larger than 4x4 an iteration simulates one new node, and a node
+ *   is expanded only after its first visit (standard MCTS). The search then goes
+ *   deeper than when every child is simulated. A 3x3 and a 4x4 keep the original.
+ * - The tree of a bot is kept between its turns (`SearchMemory`). The next
+ *   search starts from the node of the new position, with the visits it already has.
  * - A tactics layer runs first: win, block, fork, block a fork (`tactics.ts`).
  * - The heuristic (`heuristic.ts`) ranks the moves. A node opens its best
  *   moves first and more of them as it gets visits (progressive widening),
@@ -44,7 +49,7 @@ const UCB_C = 0.9
 const BIAS = 0.5
 /** A node opens this many moves at first, then more as its visits grow. */
 const WIDEN_MIN = 5
-const WIDEN_RATE = 1.5
+const WIDEN_RATE = 0.5
 /** In a playout, the best cell is taken this often. Else one of the next best. */
 const GREEDY = 0.6
 const PLAYOUT_TOP = 4
@@ -61,6 +66,37 @@ export type AiRequest = {
   timeMs: number
   /** Look for forks before the search. Off for the easy bot. */
   forks?: boolean
+  /** Key of the tree to keep between turns, one per bot and round. */
+  memoryKey?: string
+}
+
+/** Up to this many cells, every opened child is simulated, as in the original. */
+const SMALL_GRID = 16
+/** Trees kept at the same time. One per bot is enough. */
+const MEMORY_LIMIT = 16
+
+type Saved = {
+  size: number
+  winLength: number
+  players: number
+  cells: Int8Array
+  toMove: number
+  root: Node
+}
+
+/** The trees of the bots, kept between turns. The worker holds one. */
+export type SearchMemory = Map<string, Saved>
+
+export type SearchResult = {
+  cell: number
+  /** Iterations run in this call. */
+  iterations: number
+  /** Deepest node reached, in plies from the root. */
+  depth: number
+  /** Visits the root had at the start, from a kept tree. 0 when nothing was kept. */
+  reused: number
+  /** True when the tactics chose the move and no search ran. */
+  forced: boolean
 }
 
 type Node = {
@@ -161,8 +197,46 @@ function expand(node: Node, board: Board, seat: number): Node[] {
     children.push(child)
     if (child.result === seat) winners.push(child)
   }
+  // The player to move here wins at once: the move into this node lets them. Prune it.
+  if (winners.length > 0 && node.parent !== null && node.mover !== seat) node.score = -Infinity
   node.children = winners.length > 0 ? winners : children
   return node.children
+}
+
+/**
+ * The node of the kept tree for this position, or null. The new marks since
+ * the kept position must be one per seat, in turn order, and on the tree.
+ */
+function reuse(saved: Saved, board: Board, toMove: number): Node | null {
+  if (saved.size !== board.size || saved.winLength !== board.winLength) return null
+  if (saved.players !== board.players) return null
+  const added = new Map<number, number>()
+  for (let cell = 0; cell < board.cells.length; cell += 1) {
+    const before = saved.cells[cell]!
+    const now = board.cells[cell]!
+    if (before === now) continue
+    if (before !== EMPTY || added.has(now)) return null
+    added.set(now, cell)
+  }
+  if ((saved.toMove + added.size) % board.players !== toMove) return null
+  let node = saved.root
+  let seat = saved.toMove
+  for (let step = 0; step < added.size; step += 1) {
+    const cell = added.get(seat)
+    const child = node.children?.find((candidate) => candidate.move === cell)
+    if (cell === undefined || !child) return null
+    node = child
+    seat = (seat + 1) % board.players
+  }
+  if (node.result !== NONE) return null
+  node.parent = null
+  return node
+}
+
+function remember(memory: SearchMemory, key: string, saved: Saved): void {
+  memory.delete(key)
+  memory.set(key, saved)
+  while (memory.size > MEMORY_LIMIT) memory.delete(memory.keys().next().value!)
 }
 
 /** Picks a playout cell: the best one most of the time, else one of the next best. */
@@ -220,64 +294,107 @@ function toBoard(request: AiRequest): Board {
 
 /** Returns the cell to play. -1 when the grid is full. */
 export function chooseMove(request: AiRequest, random: () => number = Math.random): number {
+  return search(request, random).cell
+}
+
+/** Runs the tactics, then the search. Keeps the tree in `memory` when a key is given. */
+export function search(
+  request: AiRequest,
+  random: () => number = Math.random,
+  memory?: SearchMemory,
+): SearchResult {
   const rootBoard = toBoard(request)
-  if (rootBoard.filled === rootBoard.cells.length) return -1
+  const result: SearchResult = { cell: -1, iterations: 0, depth: 0, reused: 0, forced: false }
+  if (rootBoard.filled === rootBoard.cells.length) return result
 
   const forced = tacticalMove(rootBoard, request.toMove, request.forks !== false)
-  if (forced !== -1) return forced
+  if (forced !== -1) return { ...result, cell: forced, forced: true }
 
-  const root: Node = {
-    move: -1,
-    mover: -1,
-    parent: null,
-    children: null,
-    visits: 0,
-    score: 0,
-    prior: 0,
-    result: NONE,
+  const saved = request.memoryKey ? memory?.get(request.memoryKey) : undefined
+  let root = saved ? reuse(saved, rootBoard, request.toMove) : null
+  if (root) {
+    result.reused = root.visits
+    if (root.children === null) expand(root, rootBoard, request.toMove)
+  } else {
+    root = {
+      move: -1,
+      mover: -1,
+      parent: null,
+      children: null,
+      visits: 0,
+      score: 0,
+      prior: 0,
+      result: NONE,
+    }
+    expand(root, rootBoard, request.toMove)
   }
-  const moves = expand(root, rootBoard, request.toMove)
-  if (moves.length === 1) return moves[0]!.move
+  const moves = root.children!
+  if (moves.length === 1) return { ...result, cell: moves[0]!.move }
 
+  const small = rootBoard.cells.length <= SMALL_GRID
   const maxDepth = Math.max(8, 2 * request.players + 2 * request.winLength)
   const deadline = Date.now() + request.timeMs
 
   for (let iteration = 0; iteration < request.iterations; iteration += 1) {
     if (iteration > 0 && Date.now() > deadline) break
+    result.iterations += 1
 
     // Phase 1: selection. Replay the path on a copy of the root board.
     const board = copyBoard(rootBoard)
-    let node = root
+    let node: Node = root
     let seat = request.toMove
+    let depth = 0
     while (node.children !== null && node.children.length > 0) {
       node = best(node.children, opened(node), selectionValue)
       place(board, node.move, node.mover)
       seat = nextSeat(board, node.mover)
+      depth += 1
     }
 
-    // Phase 2: expansion. Phase 3: simulate the opened children.
-    const leaves =
-      node.result === NONE ? expand(node, board, seat).slice(0, WIDEN_MIN) : [node]
-
-    for (const leaf of leaves) {
-      let values: Float64Array
-      if (leaf === node) {
-        values = valuesOf(leaf.result, board.players)
-      } else if (leaf.result !== NONE) {
-        // A move that lets the next player win at once leads to a loss. Prune it.
-        if (leaf.result >= 0 && node.parent !== null && node.mover !== leaf.mover) {
-          node.score = -Infinity
+    if (node.result !== NONE) {
+      backpropagate(node, valuesOf(node.result, board.players))
+    } else if (small) {
+      // The original: expand, then simulate every opened child.
+      for (const leaf of expand(node, board, seat).slice(0, WIDEN_MIN)) {
+        let values: Float64Array
+        if (leaf.result !== NONE) {
+          values = valuesOf(leaf.result, board.players)
+        } else {
+          const sim = copyBoard(board)
+          place(sim, leaf.move, leaf.mover)
+          values = playout(sim, nextSeat(sim, leaf.mover), random, maxDepth)
         }
-        values = valuesOf(leaf.result, board.players)
-      } else {
-        const sim = copyBoard(board)
-        place(sim, leaf.move, leaf.mover)
-        values = playout(sim, nextSeat(sim, leaf.mover), random, maxDepth)
+        backpropagate(leaf, values)
       }
+      depth += 1
+    } else if (node.visits === 0 && node !== root) {
+      // Standard MCTS: a new node gets one playout before it is expanded.
+      backpropagate(node, playout(board, seat, random, maxDepth))
+    } else {
+      // Phase 2: expansion. Phase 3: simulate the best new child only.
+      const child = expand(node, board, seat)[0]!
+      place(board, child.move, child.mover)
+      depth += 1
+      const values =
+        child.result !== NONE
+          ? valuesOf(child.result, board.players)
+          : playout(board, nextSeat(board, child.mover), random, maxDepth)
       // Phase 4: backpropagation.
-      backpropagate(leaf, values)
+      backpropagate(child, values)
     }
+    if (depth > result.depth) result.depth = depth
   }
 
-  return best(root.children!, root.children!.length, ratio).move
+  result.cell = best(moves, moves.length, ratio).move
+  if (memory && request.memoryKey) {
+    remember(memory, request.memoryKey, {
+      size: rootBoard.size,
+      winLength: rootBoard.winLength,
+      players: rootBoard.players,
+      cells: rootBoard.cells.slice(),
+      toMove: request.toMove,
+      root,
+    })
+  }
+  return result
 }

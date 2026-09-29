@@ -49,5 +49,7 @@ export function toRequest(
     iterations: LEVELS[level].iterations,
     timeMs: LEVELS[level].timeMs,
     forks: LEVELS[level].forks,
+    // One tree per bot and round. A new round never reads an old tree.
+    memoryKey: `${botId}:${round.roundId}`,
   }
 }
