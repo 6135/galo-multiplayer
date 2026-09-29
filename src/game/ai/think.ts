@@ -1,10 +1,12 @@
 /** Asks the worker for a move. Falls back to the main thread when no worker works. */
 
-import { chooseMove, type AiRequest } from './mcts'
+import { search, type AiRequest, type SearchMemory } from './mcts'
 
 type Pending = { request: AiRequest; resolve: (cell: number) => void }
 
 let worker: Worker | null = null
+/** Used only when no worker works. */
+const memory: SearchMemory = new Map()
 let broken = false
 let nextId = 1
 const pending = new Map<number, Pending>()
@@ -16,7 +18,7 @@ function fallBack(): void {
   worker = null
   for (const [id, job] of pending) {
     pending.delete(id)
-    job.resolve(chooseMove(job.request))
+    job.resolve(search(job.request, Math.random, memory).cell)
   }
 }
 
@@ -39,7 +41,7 @@ function getWorker(): Worker | null {
 
 export function think(request: AiRequest): Promise<number> {
   const target = getWorker()
-  if (!target) return Promise.resolve(chooseMove(request))
+  if (!target) return Promise.resolve(search(request, Math.random, memory).cell)
   const id = nextId
   nextId += 1
   return new Promise((resolve) => {
