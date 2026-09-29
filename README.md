@@ -27,9 +27,16 @@ the room key. No backend, no database.
   expansion kept to the winning children when one exists, every child simulated, a heavy playout (win, else
   block, else random), 1 for a win and 0.5 for a draw, a move that lets the next player win at once is pruned,
   and the final pick is the best win ratio. It is extended to an n×n grid, k in a row and N players (each node
-  scores for the player that moved into it). On a grid larger than 4×4 it only looks at cells next to a mark,
-  and a playout stops at a fixed depth, so a 13×13 grid stays fast.
-- Levels: fácil 25 iterations, normal 250 (the original default), difícil 3000, each with a time cap.
+  scores for the player that moved into it).
+- For large grids (`src/game/ai/tactics.ts`, `src/game/ai/heuristic.ts`):
+  - A tactics layer runs before the search: win now, block a win (nearest player in turn order first), make a
+    fork, block a fork. A fork needs one winning cell per other player, because each of them can block one.
+    Against two fork cells the bot first looks for a forcing threat whose reply gives no fork.
+  - A window heuristic (every run of k cells, live for one seat only) ranks the moves. The search opens the
+    best moves first and more as visits grow (progressive widening), with a fading bonus for good moves
+    (progressive bias). Playouts pick cells by the heuristic, and a playout cut at the depth cap is scored by it.
+- Levels: fácil 25 iterations and no fork search, normal 250 (the original default), difícil 3000, each with a
+  time cap.
 
 ## Run it
 

@@ -4,10 +4,13 @@ import { EMPTY, type AiRequest } from './mcts'
 import type { BotLevel, Player, RoundState } from '../types'
 
 /** Iterations follow the original agent: 250 is its default. */
-export const LEVELS: Record<BotLevel, { iterations: number; timeMs: number; label: string }> = {
-  easy: { iterations: 25, timeMs: 150, label: 'fácil' },
-  normal: { iterations: 250, timeMs: 700, label: 'normal' },
-  hard: { iterations: 3000, timeMs: 1500, label: 'difícil' },
+export const LEVELS: Record<
+  BotLevel,
+  { iterations: number; timeMs: number; forks: boolean; label: string }
+> = {
+  easy: { iterations: 25, timeMs: 150, forks: false, label: 'fácil' },
+  normal: { iterations: 250, timeMs: 700, forks: true, label: 'normal' },
+  hard: { iterations: 3000, timeMs: 1500, forks: true, label: 'difícil' },
 }
 
 /**
@@ -43,6 +46,8 @@ export function toRequest(
     cells,
     players: active.length,
     toMove: seat.get(botId)!,
-    ...LEVELS[level],
+    iterations: LEVELS[level].iterations,
+    timeMs: LEVELS[level].timeMs,
+    forks: LEVELS[level].forks,
   }
 }

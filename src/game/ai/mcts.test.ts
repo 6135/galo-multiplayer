@@ -70,6 +70,18 @@ describe('the AI', () => {
     }
   })
 
+  it('blocks an open three with five in a row on 9x9', () => {
+    const cells = Array.from({ length: 81 }, () => EMPTY)
+    for (const cell of [39, 40, 41]) cells[cell] = 0
+    cells[30] = 1
+    cells[50] = 1
+    const cell = chooseMove(
+      { size: 9, winLength: 5, cells, players: 2, toMove: 1, iterations: 250, timeMs: 2000 },
+      seeded(5),
+    )
+    expect([38, 42]).toContain(cell)
+  })
+
   it('keeps the time budget on a 13x13 grid with 12 players', () => {
     const cells = Array.from({ length: 169 }, () => EMPTY)
     cells[84] = 0

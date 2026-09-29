@@ -2,45 +2,65 @@
  * Monte Carlo Tree Search for galo. Pure, no DOM, so it runs in a worker and in a test.
  *
  * Ported from the MCTS of 6135/IA-Mini-Project-Tict-Tac-Toe and extended from
- * 3x3 with two players to an n x n grid, a k in a row win and N players:
+ * 3x3 with two players to an n x n grid, a k in a row win and N players.
+ * Kept from the original:
  *
  * - Selection by UCB1, with the same exploration constant c = 0.9.
  * - Expansion keeps only the winning children when one exists ("returnIf").
- * - Every child of the expanded node is simulated, as in the original.
- * - A heavy playout: win now, else block the next player, else a random cell.
+ * - The children of the expanded node are simulated at once.
  * - Backpropagation: 1 to the node whose mover won, 0.5 to every node on a draw.
  *   With N players each node scores from the view of the player that moved into it.
  * - A move that lets the next player win at once is pruned (score to -Infinity).
  * - The final move is the root child with the best win ratio.
  *
- * Two additions keep a big grid fast: a move is a cell next to a mark (the
- * whole grid is too wide to search), and a playout stops after a fixed depth
- * and counts as a draw.
+ * Added for a big grid:
+ *
+ * - A tactics layer runs first: win, block, fork, block a fork (`tactics.ts`).
+ * - The heuristic (`heuristic.ts`) ranks the moves. A node opens its best
+ *   moves first and more of them as it gets visits (progressive widening),
+ *   and a good move gets a bonus that fades with visits (progressive bias).
+ * - A playout picks cells by the heuristic, not at random.
+ * - A playout that reaches the depth cap is scored by the heuristic, not as a draw.
  */
 
-export const EMPTY = -1
+import {
+  copyBoard,
+  EMPTY,
+  nextSeat,
+  place,
+  unplace,
+  winsAt,
+  type Board,
+} from './board'
+import { cutoffValues, scoreCells } from './heuristic'
+import { tacticalMove } from './tactics'
+
+export { EMPTY, winsAt } from './board'
+
 const DRAW = -2
 const NONE = -3
 const UCB_C = 0.9
+/** Weight of the heuristic bonus in the selection. */
+const BIAS = 0.5
+/** A node opens this many moves at first, then more as its visits grow. */
+const WIDEN_MIN = 5
+const WIDEN_RATE = 1.5
+/** In a playout, the best cell is taken this often. Else one of the next best. */
+const GREEDY = 0.6
+const PLAYOUT_TOP = 4
 
 export type AiRequest = {
   size: number
   winLength: number
-  /** Seat per cell, EMPTY for a free cell. */
+  /** Seat per cell, EMPTY for a free cell. A seat of `players` or more only blocks. */
   cells: number[]
   players: number
   toMove: number
   iterations: number
   /** Stop after this time even if iterations remain. */
   timeMs: number
-}
-
-type Board = {
-  size: number
-  winLength: number
-  cells: Int8Array
-  players: number
-  filled: number
+  /** Look for forks before the search. Off for the easy bot. */
+  forks?: boolean
 }
 
 type Node = {
@@ -48,84 +68,14 @@ type Node = {
   /** Seat that played `move`. -1 on the root. */
   mover: number
   parent: Node | null
+  /** Best move first. Only the first `opened(node)` take part in the selection. */
   children: Node[] | null
   visits: number
   score: number
+  /** Heuristic rank of the move, 0 to 1. */
+  prior: number
   /** Seat that won with `move`, DRAW on a full grid, NONE while the game runs. */
   result: number
-}
-
-const DIRECTIONS: readonly (readonly [number, number])[] = [
-  [0, 1],
-  [1, 0],
-  [1, 1],
-  [1, -1],
-]
-
-/** True when `seat` at `cell` makes `winLength` in a row. The cell may still be empty. */
-export function winsAt(
-  cells: ArrayLike<number>,
-  size: number,
-  winLength: number,
-  cell: number,
-  seat: number,
-): boolean {
-  const row = Math.floor(cell / size)
-  const col = cell % size
-  for (const [dr, dc] of DIRECTIONS) {
-    let count = 1
-    for (const sign of [1, -1]) {
-      let r = row + dr * sign
-      let c = col + dc * sign
-      while (r >= 0 && r < size && c >= 0 && c < size && cells[r * size + c] === seat) {
-        count += 1
-        if (count >= winLength) return true
-        r += dr * sign
-        c += dc * sign
-      }
-    }
-    if (count >= winLength) return true
-  }
-  return false
-}
-
-/**
- * The cells worth a move: the free cells next to a mark. The centre on an
- * empty grid. On a 3x3 or 4x4 grid every free cell.
- */
-export function candidates(board: Board): number[] {
-  const { size, cells } = board
-  const out: number[] = []
-  if (board.filled === 0) return [Math.floor(size / 2) * size + Math.floor(size / 2)]
-  for (let i = 0; i < cells.length; i += 1) {
-    if (cells[i] !== EMPTY) continue
-    if (size <= 4) {
-      out.push(i)
-      continue
-    }
-    const r = Math.floor(i / size)
-    const c = i % size
-    let near = false
-    for (let dr = -1; dr <= 1 && !near; dr += 1) {
-      for (let dc = -1; dc <= 1 && !near; dc += 1) {
-        const rr = r + dr
-        const cc = c + dc
-        if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue
-        if (cells[rr * size + cc] !== EMPTY) near = true
-      }
-    }
-    if (near) out.push(i)
-  }
-  return out
-}
-
-function place(board: Board, cell: number, seat: number): void {
-  board.cells[cell] = seat
-  board.filled += 1
-}
-
-function nextSeat(board: Board, seat: number): number {
-  return (seat + 1) % board.players
 }
 
 function resultOf(board: Board, cell: number, seat: number): number {
@@ -133,56 +83,37 @@ function resultOf(board: Board, cell: number, seat: number): number {
   return board.filled === board.cells.length ? DRAW : NONE
 }
 
-function pick<T>(items: readonly T[], random: () => number): T {
-  return items[Math.floor(random() * items.length)]!
+/** 1 to the winner, 0.5 to everybody on a draw. As in the original. */
+function valuesOf(result: number, players: number): Float64Array {
+  const values = new Float64Array(players)
+  if (result === DRAW) values.fill(0.5)
+  else if (result >= 0 && result < players) values[result] = 1
+  return values
 }
 
-/**
- * Heavy playout, as in the original: win now, else block the next player,
- * else play at random. Returns the winning seat or DRAW.
- */
-function playout(board: Board, toMove: number, random: () => number, maxDepth: number): number {
-  let seat = toMove
-  for (let depth = 0; depth < maxDepth; depth += 1) {
-    if (board.filled === board.cells.length) return DRAW
-    const moves = candidates(board)
-    let chosen = -1
-    for (const cell of moves) {
-      if (winsAt(board.cells, board.size, board.winLength, cell, seat)) {
-        place(board, cell, seat)
-        return seat
-      }
-    }
-    const next = nextSeat(board, seat)
-    if (next !== seat) {
-      for (const cell of moves) {
-        if (winsAt(board.cells, board.size, board.winLength, cell, next)) {
-          chosen = cell
-          break
-        }
-      }
-    }
-    if (chosen === -1) chosen = pick(moves, random)
-    place(board, chosen, seat)
-    seat = next
-  }
-  return DRAW
+function opened(node: Node): number {
+  const count = node.children?.length ?? 0
+  return Math.min(count, WIDEN_MIN + Math.floor(WIDEN_RATE * Math.sqrt(node.visits)))
 }
 
-function ucb(node: Node): number {
+function selectionValue(node: Node): number {
   if (node.visits === 0) return Infinity
   const parentVisits = node.parent!.visits
-  return node.score / node.visits + UCB_C * Math.sqrt(Math.log(parentVisits) / node.visits)
+  return (
+    node.score / node.visits +
+    UCB_C * Math.sqrt(Math.log(parentVisits) / node.visits) +
+    (BIAS * node.prior) / (node.visits + 1)
+  )
 }
 
 function ratio(node: Node): number {
   return node.visits === 0 ? -Infinity : node.score / node.visits
 }
 
-function best(nodes: readonly Node[], value: (node: Node) => number): Node {
+function best(nodes: readonly Node[], count: number, value: (node: Node) => number): Node {
   let top = nodes[0]!
   let topValue = value(top)
-  for (let i = 1; i < nodes.length; i += 1) {
+  for (let i = 1; i < count; i += 1) {
     const v = value(nodes[i]!)
     if (v > topValue) {
       top = nodes[i]!
@@ -192,13 +123,30 @@ function best(nodes: readonly Node[], value: (node: Node) => number): Node {
   return top
 }
 
-/** Children of `node`. Only the winning ones when one exists ("returnIf"). */
+/** The moves worth a look, best first: the free cells on a live window. */
+function rankedMoves(board: Board, seat: number): { cell: number; score: number }[] {
+  const scores = scoreCells(board, seat)
+  const moves: { cell: number; score: number }[] = []
+  for (let cell = 0; cell < scores.length; cell += 1) {
+    if (scores[cell]! > 0) moves.push({ cell, score: scores[cell]! })
+  }
+  // No live window is left, so the game is a draw. Any free cell will do.
+  if (moves.length === 0) {
+    for (let cell = 0; cell < board.cells.length; cell += 1) {
+      if (board.cells[cell] === EMPTY) moves.push({ cell, score: 0 })
+    }
+  }
+  return moves.sort((a, b) => b.score - a.score)
+}
+
+/** Children of `node`, best first. Only the winning ones when one exists ("returnIf"). */
 function expand(node: Node, board: Board, seat: number): Node[] {
+  const moves = rankedMoves(board, seat)
+  const top = Math.log1p(moves[0]?.score ?? 0) || 1
   const children: Node[] = []
   const winners: Node[] = []
-  for (const cell of candidates(board)) {
-    board.cells[cell] = seat
-    board.filled += 1
+  for (const { cell, score } of moves) {
+    place(board, cell, seat)
     const child: Node = {
       move: cell,
       mover: seat,
@@ -206,10 +154,10 @@ function expand(node: Node, board: Board, seat: number): Node[] {
       children: null,
       visits: 0,
       score: 0,
+      prior: Math.log1p(score) / top,
       result: resultOf(board, cell, seat),
     }
-    board.cells[cell] = EMPTY
-    board.filled -= 1
+    unplace(board, cell)
     children.push(child)
     if (child.result === seat) winners.push(child)
   }
@@ -217,12 +165,48 @@ function expand(node: Node, board: Board, seat: number): Node[] {
   return node.children
 }
 
-function backpropagate(from: Node, result: number): void {
+/** Picks a playout cell: the best one most of the time, else one of the next best. */
+function playoutCell(scores: Float64Array, cells: Int8Array, random: () => number): number {
+  const top: number[] = []
+  for (let cell = 0; cell < scores.length; cell += 1) {
+    if (cells[cell] !== EMPTY) continue
+    let at = top.length
+    while (at > 0 && scores[cell]! > scores[top[at - 1]!]!) at -= 1
+    if (at < PLAYOUT_TOP) {
+      top.splice(at, 0, cell)
+      if (top.length > PLAYOUT_TOP) top.pop()
+    }
+  }
+  if (top.length === 0) return -1
+  if (random() < GREEDY) return top[0]!
+  return top[Math.floor(random() * top.length)]!
+}
+
+/**
+ * Plays on with the heuristic until a result or the depth cap. The heuristic
+ * makes a win and a block the best cells, so the original "win, else block,
+ * else random" rule is kept. Returns a value in [0, 1] per seat.
+ */
+function playout(board: Board, toMove: number, random: () => number, maxDepth: number): Float64Array {
+  let seat = toMove
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    if (board.filled === board.cells.length) return valuesOf(DRAW, board.players)
+    const cell = playoutCell(scoreCells(board, seat), board.cells, random)
+    if (cell === -1) return valuesOf(DRAW, board.players)
+    place(board, cell, seat)
+    if (winsAt(board.cells, board.size, board.winLength, cell, seat)) {
+      return valuesOf(seat, board.players)
+    }
+    seat = nextSeat(board, seat)
+  }
+  return cutoffValues(board)
+}
+
+function backpropagate(from: Node, values: Float64Array): void {
   let node: Node | null = from
   while (node !== null) {
     node.visits += 1
-    if (result === node.mover) node.score += 1
-    else if (result === DRAW) node.score += 0.5
+    if (node.mover >= 0) node.score += values[node.mover]!
     node = node.parent
   }
 }
@@ -234,14 +218,14 @@ function toBoard(request: AiRequest): Board {
   return { size: request.size, winLength: request.winLength, cells, players: request.players, filled }
 }
 
-function copy(board: Board): Board {
-  return { ...board, cells: board.cells.slice() }
-}
-
 /** Returns the cell to play. -1 when the grid is full. */
 export function chooseMove(request: AiRequest, random: () => number = Math.random): number {
   const rootBoard = toBoard(request)
   if (rootBoard.filled === rootBoard.cells.length) return -1
+
+  const forced = tacticalMove(rootBoard, request.toMove, request.forks !== false)
+  if (forced !== -1) return forced
+
   const root: Node = {
     move: -1,
     mover: -1,
@@ -249,47 +233,51 @@ export function chooseMove(request: AiRequest, random: () => number = Math.rando
     children: null,
     visits: 0,
     score: 0,
+    prior: 0,
     result: NONE,
   }
   const moves = expand(root, rootBoard, request.toMove)
   if (moves.length === 1) return moves[0]!.move
 
-  const maxDepth = Math.max(12, request.winLength * request.players * 3)
+  const maxDepth = Math.max(8, 2 * request.players + 2 * request.winLength)
   const deadline = Date.now() + request.timeMs
 
   for (let iteration = 0; iteration < request.iterations; iteration += 1) {
     if (iteration > 0 && Date.now() > deadline) break
 
     // Phase 1: selection. Replay the path on a copy of the root board.
-    const board = copy(rootBoard)
+    const board = copyBoard(rootBoard)
     let node = root
     let seat = request.toMove
     while (node.children !== null && node.children.length > 0) {
-      node = best(node.children, ucb)
+      node = best(node.children, opened(node), selectionValue)
       place(board, node.move, node.mover)
       seat = nextSeat(board, node.mover)
     }
 
-    // Phase 2: expansion.
-    const leaves = node.result === NONE ? expand(node, board, seat) : [node]
+    // Phase 2: expansion. Phase 3: simulate the opened children.
+    const leaves =
+      node.result === NONE ? expand(node, board, seat).slice(0, WIDEN_MIN) : [node]
 
-    // Phase 3 and 4: simulate every child, then backpropagate.
     for (const leaf of leaves) {
-      let result = leaf.result
-      if (leaf !== node) {
+      let values: Float64Array
+      if (leaf === node) {
+        values = valuesOf(leaf.result, board.players)
+      } else if (leaf.result !== NONE) {
         // A move that lets the next player win at once leads to a loss. Prune it.
-        if (result !== NONE && result !== DRAW && node.parent !== null && node.mover !== leaf.mover) {
+        if (leaf.result >= 0 && node.parent !== null && node.mover !== leaf.mover) {
           node.score = -Infinity
         }
-        if (result === NONE) {
-          const sim = copy(board)
-          place(sim, leaf.move, leaf.mover)
-          result = playout(sim, nextSeat(sim, leaf.mover), random, maxDepth)
-        }
+        values = valuesOf(leaf.result, board.players)
+      } else {
+        const sim = copyBoard(board)
+        place(sim, leaf.move, leaf.mover)
+        values = playout(sim, nextSeat(sim, leaf.mover), random, maxDepth)
       }
-      backpropagate(leaf, result)
+      // Phase 4: backpropagation.
+      backpropagate(leaf, values)
     }
   }
 
-  return best(root.children!, ratio).move
+  return best(root.children!, root.children!.length, ratio).move
 }
